@@ -24,19 +24,17 @@ dome = DomeClient({
 OUT_DIR = "data/silver_features"
 DB_PATH = "data/duckdb/pmml.duckdb"
 
-MAX_MARKETS = 300          # Target: 300 suitable Yes/No markets
+MAX_MARKETS = 300      
 PAGE_LIMIT = 25
-WRITE_EVERY = 25           # write 1 parquet file every 25 markets
+WRITE_EVERY = 25       
 SLEEP = 1.05
 
 os.makedirs(OUT_DIR, exist_ok=True)
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 def main():
-    # Connect to DuckDB
     conn = duckdb.connect(DB_PATH)
     
-    # 1) Fetch CLOSED markets with pagination until we have enough suitable Yes/No markets
     print("\n\nFetching markets with pagination...\n\n")
     suitable_markets = []
     offset = 0
@@ -55,7 +53,6 @@ def main():
             print("No more markets available.")
             break
         
-        # Filter for suitable Yes/No markets
         for cand in markets:
             if cand.winning_side and cand.side_a and cand.side_b:
                 a = (cand.side_a.label or "").lower()
@@ -85,12 +82,11 @@ def main():
         else:
             y = 0
 
-        # 2) Pull candlesticks (use 1h interval, up to 1 month range per docs)
         if m.end_time is None:
             print(f"Market {m.market_slug} has no end time, skipping...")
             continue
         end_time = int(m.end_time)
-        start_time = end_time - 60 * 60 * 24 * 90 # the past 90 days
+        start_time = end_time - 60 * 60 * 24 * 90 
 
         print("\n\nFetching candlesticks...\n\n")
         try:
@@ -98,7 +94,7 @@ def main():
                 "condition_id": m.condition_id,
                 "start_time": start_time,
                 "end_time": end_time,
-                "interval": 1440,  # 1 day
+                "interval": 1440, 
             })
             time.sleep(SLEEP)
         except ValueError as e:
@@ -119,7 +115,6 @@ def main():
             token_meta = stream[-1]
             token_id = token_meta.token_id
             for c in stream[:-1]:
-                # convert to dict
                 d = vars(c)
                 d["token_id"] = token_id
                 rows.append(d)
@@ -129,7 +124,6 @@ def main():
             print(f"No candlestick data for {m.market_slug}, skipping... (took {market_elapsed:.2f}s)")
             continue
 
-        #convert rows to dataframe
         df = pd.DataFrame(rows)
 
         price_df = pd.json_normalize(df["price"]).add_prefix("price.")
@@ -144,20 +138,16 @@ def main():
                 df[col] = pd.to_numeric(df[col], errors="coerce")
         
 
-        #LOOK INTO IF THIS IS THE BEST WAY TO GET THIS
         df["p_mkt"] = (df["yes_bid.close_dollars"] + df["yes_ask.close_dollars"]) / 2.0
-        #fallback:
         df["p_mkt"] = df["p_mkt"].fillna(df["price.close_dollars"])
         df = df.dropna(subset=["p_mkt"])
 
-        #if spread is negative, set to 0
         df["spread"] = (df["yes_ask.close_dollars"] - df["yes_bid.close_dollars"]).clip(lower=0.0)
 
         df["y_final"] = y
         df["market_slug"] = m.market_slug
         df["condition_id"] = m.condition_id
         
-        # Market-level metadata for time splits and analysis
         df["market_end_time"] = int(m.end_time)
         m_start_time_attr = getattr(m, 'start_time', None)
         df["market_start_time"] = int(m_start_time_attr) if m_start_time_attr else None
@@ -178,7 +168,6 @@ def main():
         df["ret_1"] = df["p_mkt"].diff()
         df["vol_7"] = df["ret_1"].rolling(7).std()
 
-        # checking for staleness
         df["had_trade"] = (df["volume"] > 0).astype(int)
 
         all_dfs.append(df)
@@ -186,7 +175,6 @@ def main():
         market_elapsed = time.time() - market_start_time
         print(f"Processed {m.market_slug} in {market_elapsed:.2f}s ({len(df)} rows)")
         
-        # Write parquet file every WRITE_EVERY markets
         if (idx + 1) % WRITE_EVERY == 0:
             batch_df = pd.concat(all_dfs, ignore_index=True)
             parquet_path = os.path.join(OUT_DIR, f"features_{file_counter:04d}.parquet")
@@ -196,7 +184,6 @@ def main():
             all_dfs = []
             file_counter += 1
 
-    # Write final batch if there's remaining data
     if all_dfs:
         final_df = pd.concat(all_dfs, ignore_index=True)
         parquet_path = os.path.join(OUT_DIR, f"features_{file_counter:04d}.parquet")
